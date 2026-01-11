@@ -12,7 +12,7 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Load data using relative paths
-df = pd.read_excel(os.path.join(BASE_DIR, 'City Council District 2 2022 Data.xlsx'))
+df = pd.read_excel(os.path.join(BASE_DIR, 'City Council District 3 Data.xlsx'))
 gdf = gpd.read_file(os.path.join(BASE_DIR, 'tl_2020_01_vtd20.shp'))
 
 # Build GEOID20 to match shapefile format: state (01) + county (089) + precinct (padded to 6 digits)
@@ -20,68 +20,6 @@ df['GEOID20_full'] = '01089' + df['GEOID20'].astype(str).str.zfill(6)
 
 # Convert shapefile GEOID20 to string for matching
 gdf['GEOID20'] = gdf['GEOID20'].astype(str)
-
-# Merge data
-merged = gdf.merge(df, left_on='GEOID20', right_on='GEOID20_full', how='inner')
-
-# Calculate derived metrics
-candidates = ['Little', 'Petters', 'Yell']
-merged['Total_Votes'] = merged[candidates].sum(axis=1)
-
-for cand in candidates:
-    merged[f'{cand}_pct'] = (merged[cand] / merged['Total_Votes'] * 100).round(1)
-
-# Pairwise comparisons
-merged['Little_vs_Petters'] = merged['Little'] - merged['Petters']
-merged['Little_vs_Yell'] = merged['Little'] - merged['Yell']
-merged['Petters_vs_Yell'] = merged['Petters'] - merged['Yell']
-
-# Percentage margins
-merged['Little_vs_Petters_pct'] = ((merged['Little'] - merged['Petters']) / merged['Total_Votes'] * 100).round(1)
-merged['Little_vs_Yell_pct'] = ((merged['Little'] - merged['Yell']) / merged['Total_Votes'] * 100).round(1)
-merged['Petters_vs_Yell_pct'] = ((merged['Petters'] - merged['Yell']) / merged['Total_Votes'] * 100).round(1)
-
-# Three-way comparison - determine winner in each precinct
-def get_winner(row):
-    votes = {'Little': row['Little'], 'Petters': row['Petters'], 'Yell': row['Yell']}
-    winner = max(votes, key=votes.get)
-    return winner
-
-def get_winner_margin(row):
-    votes = sorted([row['Little'], row['Petters'], row['Yell']], reverse=True)
-    return votes[0] - votes[1]  # margin over second place
-
-merged['Winner'] = merged.apply(get_winner, axis=1)
-merged['Winner_Margin'] = merged.apply(get_winner_margin, axis=1)
-merged['Winner_Margin_Pct'] = (merged['Winner_Margin'] / merged['Total_Votes'] * 100).round(1)
-
-# Assign numeric codes for coloring (categorical)
-winner_map = {'Little': 0, 'Petters': 1, 'Yell': 2}
-merged['Winner_Code'] = merged['Winner'].map(winner_map)
-
-# Convert to WGS84 for mapping
-merged = merged.to_crs(epsg=4326)
-
-# Calculate centroids for bubble overlay (use projected CRS for accurate centroids)
-merged_projected = merged.to_crs(epsg=3857)  # Web Mercator for centroid calculation
-centroids = merged_projected.geometry.centroid.to_crs(epsg=4326)
-merged['centroid_lat'] = centroids.y
-merged['centroid_lon'] = centroids.x
-
-# Normalize bubble sizes
-max_votes = merged['Total_Votes'].max()
-min_votes = merged['Total_Votes'].min()
-merged['bubble_size'] = 10 + 40 * (merged['Total_Votes'] - min_votes) / (max_votes - min_votes)
-
-# Get GeoJSON for Plotly
-geojson = json.loads(merged.to_json())
-
-# Map center calculation
-center_lat = merged['centroid_lat'].mean()
-center_lon = merged['centroid_lon'].mean()
-
-# Candidate colors - Navy, Gold, Magenta for better contrast
-candidate_colors = {'Little': '#000080', 'Petters': '#FFD700', 'Yell': '#FF00FF'}
 
 # Helper function to blend white to a color based on intensity (0-1)
 def blend_to_white(hex_color, intensity):
@@ -96,24 +34,98 @@ def blend_to_white(hex_color, intensity):
     b_blend = int(255 + (b - 255) * intensity)
     return f'#{r_blend:02x}{g_blend:02x}{b_blend:02x}'
 
-# Compute winner-colored margin values
-# Normalize margins for color intensity (0 to 1)
-max_margin = merged['Winner_Margin'].max()
-max_margin_pct = merged['Winner_Margin_Pct'].max()
+# Function to prepare data for a specific year
+def prepare_year_data(year):
+    merged_temp = gdf.merge(df, left_on='GEOID20', right_on='GEOID20_full', how='inner')
+    
+    if year == 2018:
+        # Rename columns to standardize candidate names
+        merged_temp = merged_temp.rename(columns={'Robinson 2018': 'Cand1', 'Iley 2018': 'Cand2', 'Schexnayder': 'Cand3'})
+        candidates = ['Cand1', 'Cand2', 'Cand3']
+        cand_names = {'Cand1': 'Robinson', 'Cand2': 'Iley', 'Cand3': 'Schexnayder'}
+    else:  # 2014
+        merged_temp = merged_temp.rename(columns={'Robinson 2014': 'Cand1', 'Hennessee 2014': 'Cand2', 'Shexnayder 2014': 'Cand3'})
+        candidates = ['Cand1', 'Cand2', 'Cand3']
+        cand_names = {'Cand1': 'Robinson', 'Cand2': 'Hennessee', 'Cand3': 'Shexnayder'}
+    
+    merged_temp['Total_Votes'] = merged_temp[candidates].sum(axis=1)
+    
+    for cand in candidates:
+        merged_temp[f'{cand}_pct'] = (merged_temp[cand] / merged_temp['Total_Votes'] * 100).round(1)
+    
+    # Pairwise comparisons
+    merged_temp['Cand1_vs_Cand2'] = merged_temp['Cand1'] - merged_temp['Cand2']
+    merged_temp['Cand1_vs_Cand3'] = merged_temp['Cand1'] - merged_temp['Cand3']
+    merged_temp['Cand2_vs_Cand3'] = merged_temp['Cand2'] - merged_temp['Cand3']
+    
+    merged_temp['Cand1_vs_Cand2_pct'] = ((merged_temp['Cand1'] - merged_temp['Cand2']) / merged_temp['Total_Votes'] * 100).round(1)
+    merged_temp['Cand1_vs_Cand3_pct'] = ((merged_temp['Cand1'] - merged_temp['Cand3']) / merged_temp['Total_Votes'] * 100).round(1)
+    merged_temp['Cand2_vs_Cand3_pct'] = ((merged_temp['Cand2'] - merged_temp['Cand3']) / merged_temp['Total_Votes'] * 100).round(1)
+    
+    # Winner calculation
+    def get_winner(row):
+        votes = {cand_names['Cand1']: row['Cand1'], cand_names['Cand2']: row['Cand2'], cand_names['Cand3']: row['Cand3']}
+        return max(votes, key=votes.get)
+    
+    def get_winner_margin(row):
+        votes = sorted([row['Cand1'], row['Cand2'], row['Cand3']], reverse=True)
+        return votes[0] - votes[1]
+    
+    merged_temp['Winner'] = merged_temp.apply(get_winner, axis=1)
+    merged_temp['Winner_Margin'] = merged_temp.apply(get_winner_margin, axis=1)
+    merged_temp['Winner_Margin_Pct'] = (merged_temp['Winner_Margin'] / merged_temp['Total_Votes'] * 100).round(1)
+    
+    # Assign numeric codes for coloring
+    winner_map = {cand_names['Cand1']: 0, cand_names['Cand2']: 1, cand_names['Cand3']: 2}
+    merged_temp['Winner_Code'] = merged_temp['Winner'].map(winner_map)
+    
+    # Convert to WGS84 for mapping
+    merged_temp = merged_temp.to_crs(epsg=4326)
+    
+    # Calculate centroids for bubble overlay
+    merged_projected = merged_temp.to_crs(epsg=3857)
+    centroids = merged_projected.geometry.centroid.to_crs(epsg=4326)
+    merged_temp['centroid_lat'] = centroids.y
+    merged_temp['centroid_lon'] = centroids.x
+    
+    # Normalize bubble sizes
+    max_votes = merged_temp['Total_Votes'].max()
+    min_votes = merged_temp['Total_Votes'].min()
+    merged_temp['bubble_size'] = 10 + 40 * (merged_temp['Total_Votes'] - min_votes) / (max_votes - min_votes) if max_votes > min_votes else 25
+    
+    # Calculate winner colors by margin
+    cand_colors = {cand_names['Cand1']: '#000080', cand_names['Cand2']: '#FFD700', cand_names['Cand3']: '#FF00FF'}
+    max_margin = merged_temp['Winner_Margin'].max()
+    max_margin_pct = merged_temp['Winner_Margin_Pct'].max()
+    
+    def get_winner_color_by_margin(row, use_pct=False):
+        winner = row['Winner']
+        base_color = cand_colors[winner]
+        if use_pct:
+            intensity = min(row['Winner_Margin_Pct'] / max_margin_pct, 1.0) if max_margin_pct > 0 else 0.5
+        else:
+            intensity = min(row['Winner_Margin'] / max_margin, 1.0) if max_margin > 0 else 0.5
+        intensity = 0.3 + 0.7 * intensity
+        return blend_to_white(base_color, intensity)
+    
+    merged_temp['Winner_Color_Margin'] = merged_temp.apply(lambda r: get_winner_color_by_margin(r, False), axis=1)
+    merged_temp['Winner_Color_Margin_Pct'] = merged_temp.apply(lambda r: get_winner_color_by_margin(r, True), axis=1)
+    
+    return merged_temp, cand_names
 
-def get_winner_color_by_margin(row, use_pct=False):
-    winner = row['Winner']
-    base_color = candidate_colors[winner]
-    if use_pct:
-        intensity = min(row['Winner_Margin_Pct'] / max_margin_pct, 1.0) if max_margin_pct > 0 else 0.5
-    else:
-        intensity = min(row['Winner_Margin'] / max_margin, 1.0) if max_margin > 0 else 0.5
-    # Ensure minimum intensity so colors are visible
-    intensity = 0.3 + 0.7 * intensity
-    return blend_to_white(base_color, intensity)
+# Initialize with 2018 data
+merged, candidate_labels = prepare_year_data(2018)
+candidates = ['Cand1', 'Cand2', 'Cand3']
 
-merged['Winner_Color_Margin'] = merged.apply(lambda r: get_winner_color_by_margin(r, False), axis=1)
-merged['Winner_Color_Margin_Pct'] = merged.apply(lambda r: get_winner_color_by_margin(r, True), axis=1)
+# Get GeoJSON for Plotly
+geojson = json.loads(merged.to_json())
+
+# Map center calculation
+center_lat = merged['centroid_lat'].mean()
+center_lon = merged['centroid_lon'].mean()
+
+# Candidate colors - Navy, Gold, Magenta for better contrast (will be updated dynamically)
+candidate_colors = {candidate_labels['Cand1']: '#000080', candidate_labels['Cand2']: '#FFD700', candidate_labels['Cand3']: '#FF00FF'}
 
 # Create Dash app
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -121,7 +133,7 @@ app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.layout = dbc.Container([
     dbc.Row([
         dbc.Col([
-            html.H1("City Council District 2 - 2022 Election Results", className="text-center mb-4 mt-3")
+            html.H1("City Council District 3 - Election Results", className="text-center mb-4 mt-3", id='dashboard-title')
         ])
     ]),
     
@@ -130,13 +142,25 @@ app.layout = dbc.Container([
             dbc.Card([
                 dbc.CardHeader("View Options"),
                 dbc.CardBody([
+                    html.Label("Select Election Year:", className="fw-bold"),
+                    dcc.RadioItems(
+                        id='year-select',
+                        options=[
+                            {'label': ' 2014 Election', 'value': 2014},
+                            {'label': ' 2018 Election', 'value': 2018}
+                        ],
+                        value=2018,
+                        className="mb-3"
+                    ),
+                    html.Hr(),
                     html.Label("Select View:", className="fw-bold"),
                     dcc.RadioItems(
                         id='view-type',
                         options=[
                             {'label': ' Individual Candidate', 'value': 'individual'},
                             {'label': ' Head-to-Head (2-way)', 'value': 'comparison'},
-                            {'label': ' Three-Way Comparison', 'value': 'threeway'}
+                            {'label': ' Three-Way Comparison', 'value': 'threeway'},
+                            {'label': ' Turnout Change (2014 vs 2018)', 'value': 'turnout_change'}
                         ],
                         value='individual',
                         className="mb-3"
@@ -146,12 +170,8 @@ app.layout = dbc.Container([
                         html.Label("Select Candidate:", className="fw-bold mt-2"),
                         dcc.Dropdown(
                             id='candidate-select',
-                            options=[
-                                {'label': 'Little', 'value': 'Little'},
-                                {'label': 'Petters', 'value': 'Petters'},
-                                {'label': 'Yell', 'value': 'Yell'}
-                            ],
-                            value='Little',
+                            options=[],
+                            value='Cand1',
                             clearable=False
                         )
                     ]),
@@ -160,12 +180,8 @@ app.layout = dbc.Container([
                         html.Label("Select Comparison:", className="fw-bold mt-2"),
                         dcc.Dropdown(
                             id='comparison-select',
-                            options=[
-                                {'label': 'Little vs Petters', 'value': 'Little_vs_Petters'},
-                                {'label': 'Little vs Yell', 'value': 'Little_vs_Yell'},
-                                {'label': 'Petters vs Yell', 'value': 'Petters_vs_Yell'}
-                            ],
-                            value='Little_vs_Petters',
+                            options=[],
+                            value='Cand1_vs_Cand2',
                             clearable=False
                         )
                     ]),
@@ -230,6 +246,44 @@ app.layout = dbc.Container([
 
 
 @callback(
+    [Output('candidate-select', 'options'),
+     Output('candidate-select', 'value'),
+     Output('comparison-select', 'options'),
+     Output('comparison-select', 'value'),
+     Output('dashboard-title', 'children')],
+    [Input('year-select', 'value')],
+    prevent_initial_call=False
+)
+def update_year(year):
+    global merged, candidate_labels, candidate_colors, candidates, geojson, center_lat, center_lon
+    merged, candidate_labels = prepare_year_data(year)
+    candidates = ['Cand1', 'Cand2', 'Cand3']
+    candidate_colors = {candidate_labels['Cand1']: '#000080', candidate_labels['Cand2']: '#FFD700', candidate_labels['Cand3']: '#FF00FF'}
+    
+    # Regenerate GeoJSON and map center
+    geojson = json.loads(merged.to_json())
+    center_lat = merged['centroid_lat'].mean()
+    center_lon = merged['centroid_lon'].mean()
+    
+    cand_options = [
+        {'label': candidate_labels['Cand1'], 'value': 'Cand1'},
+        {'label': candidate_labels['Cand2'], 'value': 'Cand2'},
+        {'label': candidate_labels['Cand3'], 'value': 'Cand3'}
+    ]
+    
+    comp_options = [
+        {'label': f"{candidate_labels['Cand1']} vs {candidate_labels['Cand2']}", 'value': 'Cand1_vs_Cand2'},
+        {'label': f"{candidate_labels['Cand1']} vs {candidate_labels['Cand3']}", 'value': 'Cand1_vs_Cand3'},
+        {'label': f"{candidate_labels['Cand2']} vs {candidate_labels['Cand3']}", 'value': 'Cand2_vs_Cand3'}
+    ]
+    
+    title = f"City Council District 3 - {year} Election Results"
+    
+    # Return Cand1 (Robinson) as default
+    return cand_options, 'Cand1', comp_options, 'Cand1_vs_Cand2', title
+
+
+@callback(
     [Output('candidate-container', 'style'),
      Output('comparison-container', 'style'),
      Output('metric-type', 'options'),
@@ -251,33 +305,56 @@ def update_selector(view_type):
             {'label': ' Margin Percentage', 'value': 'percent'}
         ]
         return ({'display': 'none'}, {'display': 'block'}, metric_options, 'percent')
-    else:  # threeway
+    elif view_type == 'threeway':
         metric_options = [
-            {'label': ' Winner by precinct', 'value': 'winner'},
             {'label': ' Winner margin (votes)', 'value': 'margin_count'},
             {'label': ' Winner margin (%)', 'value': 'margin_pct'}
         ]
-        return ({'display': 'none'}, {'display': 'none'}, metric_options, 'winner')
+        return ({'display': 'none'}, {'display': 'none'}, metric_options, 'margin_count')
+    else:  # turnout_change
+        metric_options = [
+            {'label': ' Vote Change', 'value': 'vote_change'},
+            {'label': ' Percent Change', 'value': 'pct_change'}
+        ]
+        return ({'display': 'none'}, {'display': 'none'}, metric_options, 'vote_change')
 
 
 @callback(
     Output('legend-container', 'children'),
-    Input('view-type', 'value')
+    [Input('view-type', 'value'),
+     Input('year-select', 'value')]
 )
-def update_legend(view_type):
-    if view_type == 'threeway':
+def update_legend(view_type, year):
+    if view_type == 'turnout_change':
         return html.Div([
             html.Div([
-                html.Span("■ ", style={'color': candidate_colors['Little'], 'fontSize': '20px'}),
-                html.Span("Little")
+                html.Span("■ ", style={'color': '#DC143C', 'fontSize': '20px'}),
+                html.Span("Decreased Turnout")
             ]),
             html.Div([
-                html.Span("■ ", style={'color': candidate_colors['Petters'], 'fontSize': '20px'}),
-                html.Span("Petters")
+                html.Span("■ ", style={'color': '#FFFFFF', 'fontSize': '20px', 'textShadow': '0 0 1px #000'}),
+                html.Span("No Change")
             ]),
             html.Div([
-                html.Span("■ ", style={'color': candidate_colors['Yell'], 'fontSize': '20px'}),
-                html.Span("Yell")
+                html.Span("■ ", style={'color': '#1E90FF', 'fontSize': '20px'}),
+                html.Span("Increased Turnout")
+            ]),
+            html.Hr(),
+            html.Small("Comparing total votes: 2018 vs 2014", className="text-muted")
+        ])
+    elif view_type == 'threeway':
+        return html.Div([
+            html.Div([
+                html.Span("■ ", style={'color': candidate_colors[candidate_labels['Cand1']], 'fontSize': '20px'}),
+                html.Span(candidate_labels['Cand1'])
+            ]),
+            html.Div([
+                html.Span("■ ", style={'color': candidate_colors[candidate_labels['Cand2']], 'fontSize': '20px'}),
+                html.Span(candidate_labels['Cand2'])
+            ]),
+            html.Div([
+                html.Span("■ ", style={'color': candidate_colors[candidate_labels['Cand3']], 'fontSize': '20px'}),
+                html.Span(candidate_labels['Cand3'])
             ]),
             html.Hr(),
             html.Small("Colors show which candidate won each precinct", className="text-muted")
@@ -285,16 +362,16 @@ def update_legend(view_type):
     elif view_type == 'comparison':
         return html.Div([
             html.Div([
-                html.Span("■ ", style={'color': candidate_colors['Little'], 'fontSize': '20px'}),
-                html.Span("Little (Navy) - positive margin")
+                html.Span("■ ", style={'color': candidate_colors[candidate_labels['Cand1']], 'fontSize': '20px'}),
+                html.Span(f"{candidate_labels['Cand1']} (Navy) - positive margin")
             ]),
             html.Div([
-                html.Span("■ ", style={'color': candidate_colors['Petters'], 'fontSize': '20px'}),
-                html.Span("Petters (Gold)")
+                html.Span("■ ", style={'color': candidate_colors[candidate_labels['Cand2']], 'fontSize': '20px'}),
+                html.Span(f"{candidate_labels['Cand2']} (Gold)")
             ]),
             html.Div([
-                html.Span("■ ", style={'color': candidate_colors['Yell'], 'fontSize': '20px'}),
-                html.Span("Yell (Magenta)")
+                html.Span("■ ", style={'color': candidate_colors[candidate_labels['Cand3']], 'fontSize': '20px'}),
+                html.Span(f"{candidate_labels['Cand3']} (Magenta)")
             ]),
             html.Hr(),
             html.Small("First candidate's color = positive, Second = negative", className="text-muted")
@@ -313,32 +390,41 @@ def update_legend(view_type):
      Input('candidate-select', 'value'),
      Input('comparison-select', 'value'),
      Input('metric-type', 'value'),
-     Input('show-bubbles', 'value')]
+     Input('show-bubbles', 'value'),
+     Input('year-select', 'value')]
 )
-def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
-    print(f"update_map called: view_type={view_type}, metric_type={metric_type}")
+def update_map(view_type, candidate, comparison, metric_type, show_bubbles, year):
+    print(f"update_map called: view_type={view_type}, metric_type={metric_type}, year={year}")
     show_volume = 'show' in show_bubbles if show_bubbles else False
     
     if view_type == 'individual':
-        if candidate is None:
-            candidate = 'Little'
+        if candidate is None or candidate not in ['Cand1', 'Cand2', 'Cand3']:
+            candidate = 'Cand1'
         
         # Handle invalid metric_type when switching from threeway
         if metric_type not in ['percent', 'count']:
             metric_type = 'percent'
         
+        cand_label = candidate_labels[candidate]
+        
         if metric_type == 'percent':
             color_col = f'{candidate}_pct'
-            title = f'{candidate} - Vote Share (%)'
+            title = f'{cand_label} - Vote Share (%)'
             color_label = 'Vote %'
         else:
             color_col = candidate
-            title = f'{candidate} - Vote Count'
+            title = f'{cand_label} - Vote Count'
             color_label = 'Votes'
         
         # Create color scale from white to candidate's color
-        cand_color = candidate_colors[candidate]
+        cand_color = candidate_colors[cand_label]
         individual_scale = [[0, '#FFFFFF'], [1, cand_color]]
+        
+        # Set explicit range for color scale
+        if metric_type == 'percent':
+            range_color = [0, 100]
+        else:
+            range_color = [merged[color_col].min(), merged[color_col].max()]
         
         fig = px.choropleth_map(
             merged,
@@ -347,44 +433,52 @@ def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
             color=color_col,
             hover_name='Precinct Name',
             hover_data={
-                'Little': True,
-                'Petters': True,
-                'Yell': True,
+                'Cand1': True,
+                'Cand2': True,
+                'Cand3': True,
                 'Total_Votes': True,
-                'Little_pct': ':.1f',
-                'Petters_pct': ':.1f',
-                'Yell_pct': ':.1f'
+                'Cand1_pct': ':.1f',
+                'Cand2_pct': ':.1f',
+                'Cand3_pct': ':.1f'
+            },
+            labels={
+                'Cand1': candidate_labels['Cand1'],
+                'Cand2': candidate_labels['Cand2'],
+                'Cand3': candidate_labels['Cand3'],
+                color_col: color_label
             },
             color_continuous_scale=individual_scale,
+            range_color=range_color,
             map_style='carto-positron',
             zoom=10,
             center={'lat': center_lat, 'lon': center_lon},
-            opacity=0.7,
-            labels={color_col: color_label}
+            opacity=0.7
         )
         
     elif view_type == 'comparison':
-        if comparison is None:
-            comparison = 'Little_vs_Petters'
+        if comparison is None or comparison not in ['Cand1_vs_Cand2', 'Cand1_vs_Cand3', 'Cand2_vs_Cand3']:
+            comparison = 'Cand1_vs_Cand2'
         
         # Handle invalid metric_type when switching from threeway
         if metric_type not in ['percent', 'count']:
             metric_type = 'percent'
         
+        cand1, cand2 = comparison.split('_vs_')
+        cand1_label = candidate_labels[cand1]
+        cand2_label = candidate_labels[cand2]
+        
         if metric_type == 'percent':
             color_col = f'{comparison}_pct'
-            title = f'{comparison.replace("_", " ")} - Margin (%)'
+            title = f'{cand1_label} vs {cand2_label} - Margin (%)'
             color_label = 'Margin %'
         else:
             color_col = comparison
-            title = f'{comparison.replace("_", " ")} - Vote Margin'
+            title = f'{cand1_label} vs {cand2_label} - Vote Margin'
             color_label = 'Vote Margin'
         
-        cand1, cand2 = comparison.split('_vs_')
-        
         # Create custom color scale using candidate colors
-        color1 = candidate_colors[cand1]
-        color2 = candidate_colors[cand2]
+        color1 = candidate_colors[cand1_label]
+        color2 = candidate_colors[cand2_label]
         custom_scale = [[0, color2], [0.5, '#FFFFFF'], [1, color1]]
         
         fig = px.choropleth_map(
@@ -399,40 +493,21 @@ def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
                 'Total_Votes': True,
                 color_col: ':.1f'
             },
+            labels={
+                cand1: cand1_label,
+                cand2: cand2_label,
+                color_col: color_label
+            },
             color_continuous_scale=custom_scale,
             color_continuous_midpoint=0,
             map_style='carto-positron',
             zoom=10,
             center={'lat': center_lat, 'lon': center_lon},
-            opacity=0.7,
-            labels={color_col: color_label}
+            opacity=0.7
         )
         
-    else:  # threeway
-        if metric_type == 'winner':
-            # Categorical coloring by winner
-            fig = px.choropleth_map(
-                merged,
-                geojson=geojson,
-                locations=merged.index,
-                color='Winner',
-                hover_name='Precinct Name',
-                hover_data={
-                    'Little': True,
-                    'Petters': True,
-                    'Yell': True,
-                    'Total_Votes': True,
-                    'Winner_Margin': True,
-                    'Winner_Margin_Pct': ':.1f'
-                },
-                color_discrete_map=candidate_colors,
-                map_style='carto-positron',
-                zoom=10,
-                center={'lat': center_lat, 'lon': center_lon},
-                opacity=0.7
-            )
-            title = 'Three-Way: Winner by Precinct'
-        elif metric_type == 'margin_count':
+    elif view_type == 'threeway':
+        if metric_type == 'margin_count':
             # Use Winner_Color_Margin for intensity-based coloring
             fig = px.choropleth_map(
                 merged,
@@ -442,12 +517,17 @@ def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
                 hover_name='Precinct Name',
                 hover_data={
                     'Winner': True,
-                    'Little': True,
-                    'Petters': True,
-                    'Yell': True,
+                    'Cand1': True,
+                    'Cand2': True,
+                    'Cand3': True,
                     'Total_Votes': True,
                     'Winner_Margin': True,
                     'Winner_Margin_Pct': ':.1f'
+                },
+                labels={
+                    'Cand1': candidate_labels['Cand1'],
+                    'Cand2': candidate_labels['Cand2'],
+                    'Cand3': candidate_labels['Cand3']
                 },
                 color_discrete_map={c: c for c in merged['Winner_Color_Margin'].unique()},
                 map_style='carto-positron',
@@ -480,12 +560,17 @@ def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
                 hover_name='Precinct Name',
                 hover_data={
                     'Winner': True,
-                    'Little': True,
-                    'Petters': True,
-                    'Yell': True,
+                    'Cand1': True,
+                    'Cand2': True,
+                    'Cand3': True,
                     'Total_Votes': True,
                     'Winner_Margin': True,
                     'Winner_Margin_Pct': ':.1f'
+                },
+                labels={
+                    'Cand1': candidate_labels['Cand1'],
+                    'Cand2': candidate_labels['Cand2'],
+                    'Cand3': candidate_labels['Cand3']
                 },
                 color_discrete_map={c: c for c in merged['Winner_Color_Margin_Pct'].unique()},
                 map_style='carto-positron',
@@ -509,28 +594,94 @@ def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
             ))
             title = 'Three-Way: Winner Margin (%) - Intensity = Margin Size'
         else:
-            # Fallback to winner view for any other metric_type
+            # Fallback to margin_count if metric_type is unexpected
+            metric_type = 'margin_count'
             fig = px.choropleth_map(
                 merged,
                 geojson=geojson,
                 locations=merged.index,
-                color='Winner',
+                color='Winner_Color_Margin',
                 hover_name='Precinct Name',
                 hover_data={
-                    'Little': True,
-                    'Petters': True,
-                    'Yell': True,
+                    'Winner': True,
+                    'Cand1': True,
+                    'Cand2': True,
+                    'Cand3': True,
                     'Total_Votes': True,
                     'Winner_Margin': True,
                     'Winner_Margin_Pct': ':.1f'
                 },
-                color_discrete_map=candidate_colors,
+                labels={
+                    'Cand1': candidate_labels['Cand1'],
+                    'Cand2': candidate_labels['Cand2'],
+                    'Cand3': candidate_labels['Cand3']
+                },
+                color_discrete_map={c: c for c in merged['Winner_Color_Margin'].unique()},
                 map_style='carto-positron',
                 zoom=10,
                 center={'lat': center_lat, 'lon': center_lon},
-                opacity=0.7
+                opacity=0.85
             )
-            title = 'Three-Way: Winner by Precinct'
+            fig.update_layout(showlegend=False)
+            title = 'Three-Way: Winner Margin (votes) - Intensity = Margin Size'
+    
+    elif view_type == 'turnout_change':
+        # Load both years and compare turnout
+        merged_2014, labels_2014 = prepare_year_data(2014)
+        merged_2018, labels_2018 = prepare_year_data(2018)
+        
+        # Merge on precinct name to compare
+        comparison_df = merged_2018[['Precinct Name', 'Total_Votes', 'geometry']].copy()
+        comparison_df = comparison_df.rename(columns={'Total_Votes': 'Votes_2018'})
+        
+        votes_2014 = merged_2014[['Precinct Name', 'Total_Votes']].copy()
+        votes_2014 = votes_2014.rename(columns={'Total_Votes': 'Votes_2014'})
+        
+        comparison_df = comparison_df.merge(votes_2014, on='Precinct Name', how='left')
+        
+        # Calculate changes
+        comparison_df['Vote_Change'] = comparison_df['Votes_2018'] - comparison_df['Votes_2014']
+        comparison_df['Pct_Change'] = ((comparison_df['Votes_2018'] - comparison_df['Votes_2014']) / comparison_df['Votes_2014'] * 100).round(1)
+        
+        # Create GeoDataFrame for plotting
+        comparison_gdf = gpd.GeoDataFrame(comparison_df, geometry='geometry')
+        comparison_geojson = json.loads(comparison_gdf.to_json())
+        
+        if metric_type == 'vote_change':
+            color_col = 'Vote_Change'
+            color_label = 'Vote Change'
+            title = 'Turnout Change: Total Votes (2018 - 2014)'
+        else:
+            color_col = 'Pct_Change'
+            color_label = '% Change'
+            title = 'Turnout Change: Percent (2018 - 2014)'
+        
+        # Diverging color scale: red (negative) -> white (0) -> blue (positive)
+        fig = px.choropleth_map(
+            comparison_gdf,
+            geojson=comparison_geojson,
+            locations=comparison_gdf.index,
+            color=color_col,
+            hover_name='Precinct Name',
+            hover_data={
+                'Votes_2014': True,
+                'Votes_2018': True,
+                'Vote_Change': True,
+                'Pct_Change': ':.1f'
+            },
+            labels={
+                'Votes_2014': '2014 Total',
+                'Votes_2018': '2018 Total',
+                'Vote_Change': 'Change',
+                'Pct_Change': '% Change'
+            },
+            color_continuous_scale=['#DC143C', '#FFFFFF', '#1E90FF'],  # Red -> White -> Blue
+            color_continuous_midpoint=0,
+            map_style='carto-positron',
+            zoom=10,
+            center={'lat': center_lat, 'lon': center_lon},
+            opacity=0.7
+        )
     
     # Add pie chart overlay for vote volume if enabled
     if show_volume:
@@ -541,9 +692,9 @@ def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
             if total == 0:
                 continue
                 
-            little_pct = row['Little'] / total
-            petters_pct = row['Petters'] / total
-            yell_pct = row['Yell'] / total
+            cand1_pct = row['Cand1'] / total
+            cand2_pct = row['Cand2'] / total
+            cand3_pct = row['Cand3'] / total
             
             # Scale size based on total votes - smaller radius for better fit
             r = 0.002 + 0.004 * (row['bubble_size'] - 10) / 40  # radius in degrees
@@ -553,14 +704,14 @@ def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
             
             hover_text = (f"<b>{row['Precinct Name']}</b><br>"
                          f"Total: {total}<br>"
-                         f"Little: {row['Little']} ({row['Little_pct']}%)<br>"
-                         f"Petters: {row['Petters']} ({row['Petters_pct']}%)<br>"
-                         f"Yell: {row['Yell']} ({row['Yell_pct']}%)")
+                         f"{candidate_labels['Cand1']}: {row['Cand1']} ({row['Cand1_pct']}%)<br>"
+                         f"{candidate_labels['Cand2']}: {row['Cand2']} ({row['Cand2_pct']}%)<br>"
+                         f"{candidate_labels['Cand3']}: {row['Cand3']} ({row['Cand3_pct']}%)")
             
             n_points = 20  # points per slice for smooth edges
-            pcts = [little_pct, petters_pct, yell_pct]
-            pie_colors = [candidate_colors['Little'], candidate_colors['Petters'], candidate_colors['Yell']]
-            labels = ['Little', 'Petters', 'Yell']
+            pcts = [cand1_pct, cand2_pct, cand3_pct]
+            pie_colors = [candidate_colors[candidate_labels['Cand1']], candidate_colors[candidate_labels['Cand2']], candidate_colors[candidate_labels['Cand3']]]
+            labels = [candidate_labels['Cand1'], candidate_labels['Cand2'], candidate_labels['Cand3']]
             
             cumulative = 0
             for i, (pct, color, label) in enumerate(zip(pcts, pie_colors, labels)):
@@ -606,26 +757,45 @@ def update_map(view_type, candidate, comparison, metric_type, show_bubbles):
     Output('results-table', 'children'),
     [Input('view-type', 'value'),
      Input('candidate-select', 'value'),
-     Input('comparison-select', 'value')]
+     Input('comparison-select', 'value'),
+     Input('year-select', 'value')]
 )
-def update_table(view_type, candidate, comparison):
-    if view_type == 'threeway':
-        table_df = merged[['Precinct Name', 'Little', 'Petters', 'Yell', 'Total_Votes', 
+def update_table(view_type, candidate, comparison, year):
+    if view_type == 'turnout_change':
+        # Show comparison table
+        merged_2014, labels_2014 = prepare_year_data(2014)
+        merged_2018, labels_2018 = prepare_year_data(2018)
+        
+        comparison_df = merged_2018[['Precinct Name', 'Total_Votes']].copy()
+        comparison_df = comparison_df.rename(columns={'Total_Votes': 'Votes_2018'})
+        
+        votes_2014 = merged_2014[['Precinct Name', 'Total_Votes']].copy()
+        votes_2014 = votes_2014.rename(columns={'Total_Votes': 'Votes_2014'})
+        
+        comparison_df = comparison_df.merge(votes_2014, on='Precinct Name', how='left')
+        comparison_df['Change'] = comparison_df['Votes_2018'] - comparison_df['Votes_2014']
+        comparison_df['% Change'] = ((comparison_df['Votes_2018'] - comparison_df['Votes_2014']) / comparison_df['Votes_2014'] * 100).round(1)
+        
+        table_df = comparison_df[['Precinct Name', 'Votes_2014', 'Votes_2018', 'Change', '% Change']]
+        table_df.columns = ['Precinct', '2014 Total', '2018 Total', 'Change', '% Change']
+        table_df = table_df.sort_values('Change', ascending=False)
+    elif view_type == 'threeway':
+        table_df = merged[['Precinct Name', 'Cand1', 'Cand2', 'Cand3', 'Total_Votes', 
                            'Winner', 'Winner_Margin', 'Winner_Margin_Pct']].copy()
-        table_df.columns = ['Precinct', 'Little', 'Petters', 'Yell', 'Total', 
+        table_df.columns = ['Precinct', candidate_labels['Cand1'], candidate_labels['Cand2'], candidate_labels['Cand3'], 'Total', 
                             'Winner', 'Margin', 'Margin %']
         table_df = table_df.sort_values('Total', ascending=False)
     else:
-        table_df = merged[['Precinct Name', 'Little', 'Petters', 'Yell', 'Total_Votes', 
-                           'Little_pct', 'Petters_pct', 'Yell_pct']].copy()
-        table_df.columns = ['Precinct', 'Little', 'Petters', 'Yell', 'Total', 
-                            'Little %', 'Petters %', 'Yell %']
+        table_df = merged[['Precinct Name', 'Cand1', 'Cand2', 'Cand3', 'Total_Votes', 
+                           'Cand1_pct', 'Cand2_pct', 'Cand3_pct']].copy()
+        table_df.columns = ['Precinct', candidate_labels['Cand1'], candidate_labels['Cand2'], candidate_labels['Cand3'], 'Total', 
+                            f"{candidate_labels['Cand1']} %", f"{candidate_labels['Cand2']} %", f"{candidate_labels['Cand3']} %"]
         
         if view_type == 'individual' and candidate:
-            table_df = table_df.sort_values(f'{candidate} %', ascending=False)
+            table_df = table_df.sort_values(f'{candidate_labels[candidate]} %', ascending=False)
         elif view_type == 'comparison' and comparison:
             cand1, cand2 = comparison.split('_vs_')
-            table_df = table_df.sort_values(cand1, ascending=False)
+            table_df = table_df.sort_values(candidate_labels[cand1], ascending=False)
         else:
             table_df = table_df.sort_values('Total', ascending=False)
     
@@ -641,20 +811,25 @@ def update_table(view_type, candidate, comparison):
 
 @callback(
     Output('bar-chart', 'figure'),
-    Input('view-type', 'value')
+    [Input('view-type', 'value'),
+     Input('year-select', 'value')]
 )
-def update_bar(view_type):
+def update_bar(view_type, year):
+    # Regenerate data for the selected year to ensure bar chart shows correct totals
+    current_merged, current_labels = prepare_year_data(year)
+    current_colors_dict = {current_labels['Cand1']: '#000080', current_labels['Cand2']: '#FFD700', current_labels['Cand3']: '#FF00FF'}
+    
     totals = {
-        'Little': merged['Little'].sum(),
-        'Petters': merged['Petters'].sum(),
-        'Yell': merged['Yell'].sum()
+        current_labels['Cand1']: current_merged['Cand1'].sum(),
+        current_labels['Cand2']: current_merged['Cand2'].sum(),
+        current_labels['Cand3']: current_merged['Cand3'].sum()
     }
     
     fig = go.Figure(data=[
         go.Bar(
             x=list(totals.keys()),
             y=list(totals.values()),
-            marker_color=[candidate_colors['Little'], candidate_colors['Petters'], candidate_colors['Yell']],
+            marker_color=[current_colors_dict[current_labels['Cand1']], current_colors_dict[current_labels['Cand2']], current_colors_dict[current_labels['Cand3']]],
             text=list(totals.values()),
             textposition='auto'
         )
@@ -675,7 +850,7 @@ server = app.server
 
 if __name__ == '__main__':
     print(f"\nSuccessfully matched {len(merged)} precincts")
-    print(f"Total votes - Little: {merged['Little'].sum()}, Petters: {merged['Petters'].sum()}, Yell: {merged['Yell'].sum()}")
+    print(f"Total votes - {candidate_labels['Cand1']}: {merged['Cand1'].sum()}, {candidate_labels['Cand2']}: {merged['Cand2'].sum()}, {candidate_labels['Cand3']}: {merged['Cand3'].sum()}")
     print(f"\nPrecincts won by each candidate:")
     print(merged['Winner'].value_counts().to_string())
     print("\nStarting dashboard server...")
